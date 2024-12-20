@@ -1,0 +1,25 @@
+- name: Install Kubernetes components
+  hosts: all
+  become: true
+  roles:
+    - role: install_k8s
+
+- name: Configure master node
+  hosts: master
+  become: true
+  roles:
+    - role: configuring_master
+
+- name: Join worker nodes
+  hosts: worker
+  become: true
+  roles:
+    - role: join_worker
+
+- name: Deploy applications
+  hosts: master
+  become: true
+  roles:
+    - role: deploy
+      vars:
+        remote_user: "shumkin"

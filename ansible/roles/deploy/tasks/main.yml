@@ -1,0 +1,20 @@
+- name: Create destination directory in user's home
+  file:
+    path: "/home/{{ remote_user }}/kube"
+    state: directory
+
+
+- name: Copy kube files to master node
+  copy:
+    src: "kube/"
+    dest: "/home/{{ remote_user }}/kube/"
+
+- name: Restart coredns
+  shell: "kubectl rollout restart deployment coredns -n kube-system"
+
+- name: Pause for 30 seconds
+  pause:
+    seconds: 30
+
+- name: Do deploy
+  command: "kubectl apply -f ./kube/"

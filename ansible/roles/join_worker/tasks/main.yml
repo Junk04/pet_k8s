@@ -1,0 +1,5 @@
+- name: Join worker to cluster
+  shell: "{{ hostvars[groups['master'][0]].join_command }} >> /var/log/node_joined.log"
+  args:
+    chdir: /tmp
+    creates: /var/log/node_joined.log

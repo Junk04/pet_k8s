@@ -1,0 +1,262 @@
+- name: Configuring Node
+  hosts: all
+  become: true
+  become_method: sudo
+  vars:
+    ansible_become_password: "123"
+    OS: "xUbuntu_22.04"
+    CRIO_VERSION: "1.25"
+
+  tasks:
+    - name: Update Packages
+      apt:
+        update_cache: yes
+
+    - name: Installing useful utilities
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg2
+          - software-properties-common
+        state: latest
+        update_cache: true
+
+    - name: SWAP OFF
+      shell: |
+        swapoff -a
+    
+    - name: Disable SWAP in fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+        replace: '# \1'
+    
+    - name: Configure modules for containerd
+      blockinfile:
+        path: /etc/modules-load.d/k8s.conf
+        block: |
+          overlay
+          br_netfilter
+        create: yes
+    
+    - name: Load br_netfilter kernel module
+      modprobe:
+        name: br_netfilter
+        state: present
+    
+    - name: Load overlay kernel module
+      modprobe:
+        name: overlay
+        state: present
+
+    
+    - name: Configure sysctl parameters for K8S
+      lineinfile:
+        path: /etc/sysctl.d/k8s.conf
+        line: "{{ item }}"
+        create: yes
+      with_items:
+        - "net.bridge.bridge-nf-call-iptables  = 1"
+        - "net.ipv4.ip_forward                 = 1"
+        - "net.bridge.bridge-nf-call-ip6tables = 1"
+    
+    - name: Set bridge-nf-call-iptables
+      sysctl:
+        name: net.bridge.bridge-nf-call-iptables
+        value: 1
+
+    - name: Set ip_forward
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: 1
+  
+    - name: Apply sysctl settings
+      command: sysctl --system
+    
+    - name: Export OS and CRIO_VERSION environment variables
+      shell: |
+        export OS=xUbuntu_22.04
+        export CRIO_VERSION=1.25
+      environment:
+        OS: xUbuntu_22.04
+        CRIO_VERSION: 1.25
+    
+    - name: Add the repository line to sources.list.d
+      lineinfile:
+        path: /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
+        line: "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/{{ OS }}/ /"
+        create: yes
+      environment:
+        CRIO_VERSION: "1.25"
+        OS: "xUbuntu_22.04"
+    
+    - name: Add the CRIO repository
+      lineinfile:
+        path: "/etc/apt/sources.list.d/devel:kubic:libcontainers:stable:cri-o:{{ CRIO_VERSION }}.list"
+        line: "deb http://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/{{ CRIO_VERSION }}/{{ OS }}/ /"
+        create: yes
+      environment:
+        CRIO_VERSION: "1.25"
+        OS: "xUbuntu_22.04"
+
+    - name: Add GPG key for CRIO repository
+      shell: |
+        curl -L https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable:cri-o:{{ CRIO_VERSION }}/{{ OS }}/Release.key | apt-key add -
+      environment:
+        CRIO_VERSION: "1.25"
+        OS: "xUbuntu_22.04"
+
+    - name: Add GPG key for CRIO repository
+      shell: |
+        curl -L https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/$OS/Release.key | apt-key add -
+      environment:
+        OS: "xUbuntu_22.04"
+
+    - name: Update Packages
+      apt:
+        update_cache: yes
+    
+    - name: Installing crio
+      apt:
+        name:
+          - cri-o
+          - cri-o-runc
+          - cri-tools
+        state: latest
+        update_cache: true
+    
+    - name: Start CRIO service
+      systemd:
+        name: crio
+        state: started
+        enabled: yes
+    
+
+    - name: Download Kubernetes GPG key
+      get_url:
+        url: "https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key"
+        dest: /tmp/k8s-Release.key
+
+    - name: Convert the GPG key to apt keyring format
+      command: "gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/k8s-Release.key"
+
+    - name: Remove the temporary GPG key file
+      file:
+        path: /tmp/k8s-Release.key
+        state: absent
+    
+    - name: Add Kubernetes repository line to sources.list.d
+      lineinfile:
+        path: /etc/apt/sources.list.d/kubernetes.list
+        line: 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /'
+        mode: '0644'
+        create: yes 
+
+    - name: Update Packages
+      apt:
+        update_cache: yes
+
+
+    - name: Installing kubelet, kubeadm, kubectl
+      apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+        update_cache: true
+    
+    - name: Hold kubelet, kubeadm, kubectl packages
+      command:
+        cmd: apt-mark hold kubelet kubeadm kubectl
+    
+    - name: Write DNS in /etc/resolv.conf
+      lineinfile:
+        path: /etc/resolv.conf
+        line: "nameserver {{ item }}"
+        state: present
+      with_items:
+        - "8.8.8.8"
+        - "8.8.4.4"
+
+
+- name: Configuring master
+  hosts: master
+  become: true
+  become_method: sudo
+  vars:
+    ansible_become_password: "123"
+  
+  tasks:
+
+    - name: Initialize Kubernetes cluster
+      command: kubeadm init --pod-network-cidr=10.244.0.0/16 --cri-socket=unix:///var/run/crio/crio.sock
+      register: init_output
+
+    - name: Configure kubectl for root user
+      shell: |
+        mkdir -p /root/.kube
+        cp -i /etc/kubernetes/admin.conf /root/.kube/config
+        chown $(id -u root):$(id -g root) /root/.kube/config
+    
+    - name: Install Pod Network
+      become: yes
+      shell: kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
+    
+    - name: Retrieve Join Command
+      shell: kubeadm token create --print-join-command
+      register: join_command_raw
+
+    - name: Set Join Command
+      set_fact:
+        join_command: "{{ join_command_raw.stdout_lines[0] }}"
+
+
+
+- name: Join Worker Nodes
+  hosts: worker
+  become: true
+  become_method: sudo
+  vars:
+    ansible_become_password: "123"
+
+  tasks:
+
+    - name: Join worker to cluster
+      shell: "{{ hostvars[groups['master'][0]].join_command }} >> /var/log/node_joined.log"
+      args:
+        chdir: /tmp
+        creates: /var/log/node_joined.log
+
+
+- name: Deploy
+  hosts: master
+  become: true
+  become_method: sudo
+  vars:
+    ansible_become_password: "123"
+    remote_user: "shumkin"
+  
+  tasks:
+    - name: Create destination directory in user's home
+      file:
+        path: "/home/{{ remote_user }}/kube"
+        state: directory
+
+
+    - name: Copy kube files to master node
+      copy:
+        src: /home/shumkin-aleksandr-yurevich/devops/ansible/kube/
+        dest: "/home/{{ remote_user }}/kube/"
+
+    - name: Restart coredns
+      shell: "kubectl rollout restart deployment coredns -n kube-system"
+
+    - name: Pause for 60 seconds
+      pause:
+        seconds: 60
+
+    - name: Do deploy
+      command: "kubectl apply -f ./kube/"

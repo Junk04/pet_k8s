@@ -1,0 +1,3 @@
+OS: "xUbuntu_22.04"
+CRIO_VERSION: "1.25"
+ansible_become_password: "123"

@@ -1,0 +1,2 @@
+remote_user: "shumkin"
+ansible_become_password: "123"
